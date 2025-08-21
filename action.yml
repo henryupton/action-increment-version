@@ -1,4 +1,4 @@
-name: 'Increment Semantic Version'
+name: 'Incrementally Update a Semantic Version'
 description: 'Automatically increment semantic version, create tags, and optionally update files'
 author: 'Your Name'
 
