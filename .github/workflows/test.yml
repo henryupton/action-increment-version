@@ -1,0 +1,325 @@
+name: Test Action
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Test version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  test-basic:
+    name: Test Basic Functionality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clean up existing test tags
+        run: |
+          # Delete any existing test tags to avoid conflicts
+          git tag -l | grep -E "^test-|^dispatch-" | xargs -r git tag -d || true
+          git push --delete origin $(git tag -l | grep -E "^test-|^dispatch-") 2>/dev/null || true
+
+      - name: Test patch increment
+        id: test_patch
+        uses: ./
+        with:
+          version_bump: 'patch'
+          tag_prefix: 'test-patch-${{ github.run_id }}-'
+          create_release: 'false'
+          commit_message: 'test: bump patch version to {version}'
+
+      - name: Verify patch increment
+        run: |
+          echo "Previous version: ${{ steps.test_patch.outputs.previous_version }}"
+          echo "New version: ${{ steps.test_patch.outputs.new_version }}"
+          echo "Tag name: ${{ steps.test_patch.outputs.tag_name }}"
+          
+          # Basic validation
+          if [[ -z "${{ steps.test_patch.outputs.new_version }}" ]]; then
+            echo "❌ New version is empty"
+            exit 1
+          fi
+          echo "✅ Patch increment test passed"
+
+  test-version-types:
+    name: Test All Version Bump Types
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        version_bump: [patch, minor, major]
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test ${{ matrix.version_bump }} increment
+        id: test_version
+        uses: ./
+        with:
+          version_bump: ${{ matrix.version_bump }}
+          tag_prefix: 'test-${{ matrix.version_bump }}-${{ github.run_id }}-'
+          create_release: 'false'
+
+      - name: Validate ${{ matrix.version_bump }} increment
+        run: |
+          PREV="${{ steps.test_version.outputs.previous_version }}"
+          NEW="${{ steps.test_version.outputs.new_version }}"
+          
+          echo "Testing ${{ matrix.version_bump }} increment:"
+          echo "Previous: $PREV"
+          echo "New: $NEW"
+          
+          # Parse versions
+          IFS='.' read -r -a PREV_PARTS <<< "$PREV"
+          IFS='.' read -r -a NEW_PARTS <<< "$NEW"
+          
+          case "${{ matrix.version_bump }}" in
+            "patch")
+              if [[ ${NEW_PARTS[2]} -ne $((${PREV_PARTS[2]} + 1)) ]]; then
+                echo "❌ Patch increment failed"
+                exit 1
+              fi
+              ;;
+            "minor")
+              if [[ ${NEW_PARTS[1]} -ne $((${PREV_PARTS[1]} + 1)) ]] || [[ ${NEW_PARTS[2]} -ne 0 ]]; then
+                echo "❌ Minor increment failed"
+                exit 1
+              fi
+              ;;
+            "major")
+              if [[ ${NEW_PARTS[0]} -ne $((${PREV_PARTS[0]} + 1)) ]] || [[ ${NEW_PARTS[1]} -ne 0 ]] || [[ ${NEW_PARTS[2]} -ne 0 ]]; then
+                echo "❌ Major increment failed"
+                exit 1
+              fi
+              ;;
+          esac
+          echo "✅ ${{ matrix.version_bump }} increment test passed"
+
+  test-file-updates:
+    name: Test File Updates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create test files
+        run: |
+          echo '{"version": "1.0.0", "name": "test-package"}' > package.json
+          echo 'version = "1.0.0"' > setup.py
+          echo 'revision: 1.0.0' > config.yml
+
+      - name: Test package.json update
+        id: test_package
+        uses: ./
+        with:
+          version_bump: 'patch'
+          tag_prefix: 'test-pkg-${{ github.run_id }}-'
+          update_file: 'package.json'
+          update_pattern: '\"version\": \"[^\"]*\"'
+          update_replacement: '\"version\": \"{version}\"'
+          create_release: 'false'
+
+      - name: Verify package.json update
+        run: |
+          NEW_VERSION="${{ steps.test_package.outputs.new_version }}"
+          if grep -q "\"version\": \"$NEW_VERSION\"" package.json; then
+            echo "✅ package.json updated correctly"
+          else
+            echo "❌ package.json update failed"
+            cat package.json
+            exit 1
+          fi
+
+      - name: Test setup.py update
+        id: test_setup
+        uses: ./
+        with:
+          version_bump: 'patch'
+          tag_prefix: 'test-setup-${{ github.run_id }}-'
+          update_file: 'setup.py'
+          update_pattern: 'version = "[^"]*"'
+          update_replacement: 'version = "{version}"'
+          create_release: 'false'
+
+      - name: Verify setup.py update
+        run: |
+          NEW_VERSION="${{ steps.test_setup.outputs.new_version }}"
+          if grep -q "version = \"$NEW_VERSION\"" setup.py; then
+            echo "✅ setup.py updated correctly"
+          else
+            echo "❌ setup.py update failed"
+            cat setup.py
+            exit 1
+          fi
+
+  test-tag-prefixes:
+    name: Test Tag Prefixes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        prefix: ['', 'v', 'release-', 'version-']
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test tag prefix '${{ matrix.prefix }}'
+        id: test_prefix
+        uses: ./
+        with:
+          version_bump: 'patch'
+          tag_prefix: '${{ matrix.prefix }}${{ github.run_id }}-'
+          create_release: 'false'
+
+      - name: Verify tag prefix
+        run: |
+          TAG_NAME="${{ steps.test_prefix.outputs.tag_name }}"
+          NEW_VERSION="${{ steps.test_prefix.outputs.new_version }}"
+          EXPECTED="${{ matrix.prefix }}${{ github.run_id }}-$NEW_VERSION"
+          
+          if [[ "$TAG_NAME" == "$EXPECTED" ]]; then
+            echo "✅ Tag prefix '${{ matrix.prefix }}' test passed: $TAG_NAME"
+          else
+            echo "❌ Tag prefix test failed. Expected: $EXPECTED, Got: $TAG_NAME"
+            exit 1
+          fi
+
+  test-custom-messages:
+    name: Test Custom Messages and Templates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test custom commit message
+        id: test_commit
+        uses: ./
+        with:
+          version_bump: 'patch'
+          tag_prefix: 'test-msg-${{ github.run_id }}-'
+          commit_message: 'chore(release): version {version} [skip ci]'
+          create_release: 'false'
+
+      - name: Verify custom commit message
+        run: |
+          NEW_VERSION="${{ steps.test_commit.outputs.new_version }}"
+          EXPECTED_MSG="chore(release): version $NEW_VERSION [skip ci]"
+          ACTUAL_MSG=$(git log -1 --pretty=format:"%s")
+          
+          if [[ "$ACTUAL_MSG" == "$EXPECTED_MSG" ]]; then
+            echo "✅ Custom commit message test passed: $ACTUAL_MSG"
+          else
+            echo "❌ Custom commit message test failed"
+            echo "Expected: $EXPECTED_MSG"
+            echo "Actual: $ACTUAL_MSG"
+            exit 1
+          fi
+
+  test-error-conditions:
+    name: Test Error Conditions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test invalid version bump (should fail)
+        id: test_invalid
+        continue-on-error: true
+        uses: ./
+        with:
+          version_bump: 'invalid'
+          tag_prefix: 'test-invalid-${{ github.run_id }}-'
+          create_release: 'false'
+
+      - name: Verify invalid version bump fails
+        run: |
+          if [[ "${{ steps.test_invalid.outcome }}" == "success" ]]; then
+            echo "❌ Invalid version bump should have failed"
+            exit 1
+          else
+            echo "✅ Invalid version bump correctly failed"
+          fi
+
+      - name: Test missing file update (should not fail but warn)
+        id: test_missing_file
+        uses: ./
+        with:
+          version_bump: 'patch'
+          tag_prefix: 'test-missing-${{ github.run_id }}-'
+          update_file: 'nonexistent.json'
+          update_pattern: '\"version\": \"[^\"]*\"'
+          update_replacement: '\"version\": \"{version}\"'
+          create_release: 'false'
+
+      - name: Verify missing file handling
+        run: |
+          echo "✅ Missing file test completed (should not fail the action)"
+
+  test-workflow-dispatch:
+    name: Test Workflow Dispatch Input
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test with workflow dispatch input
+        id: test_dispatch
+        uses: ./
+        with:
+          version_bump: ${{ inputs.version_bump }}
+          tag_prefix: 'dispatch-${{ github.run_id }}-'
+          create_release: 'false'
+
+      - name: Display dispatch test results
+        run: |
+          echo "Workflow dispatch test with ${{ inputs.version_bump }} increment:"
+          echo "Previous version: ${{ steps.test_dispatch.outputs.previous_version }}"
+          echo "New version: ${{ steps.test_dispatch.outputs.new_version }}"
+          echo "Tag name: ${{ steps.test_dispatch.outputs.tag_name }}"
+          echo "✅ Workflow dispatch test completed"
