@@ -51,6 +51,11 @@ inputs:
     description: 'Commit message template (use {version} placeholder)'
     required: false
     default: 'Bump version to {version}'
+  
+  github_token:
+    description: 'GitHub token for authentication (defaults to github.token)'
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   previous_version:
@@ -173,6 +178,9 @@ runs:
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         
+        # Configure git credentials using the provided token
+        git config --global url."https://x-access-token:${{ inputs.github_token }}@github.com/".insteadOf "https://github.com/"
+        
         # Check if there are changes to commit
         if [[ -n "${{ inputs.update_file }}" ]] && git diff --quiet HEAD; then
           echo "No changes to commit"
@@ -220,7 +228,7 @@ runs:
         
         echo "Created GitHub release: $TAG_NAME"
       env:
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ inputs.github_token }}
 
     - name: Set outputs
       id: final-outputs
