@@ -1,0 +1,209 @@
+name: 'Increment Semantic Version'
+description: 'Automatically increment semantic version, create tags, and optionally update files'
+author: 'Your Name'
+
+branding:
+  icon: 'arrow-up'
+  color: 'green'
+
+inputs:
+  version_bump:
+    description: 'Type of version bump (patch, minor, major)'
+    required: false
+    default: 'patch'
+  
+  tag_prefix:
+    description: 'Prefix for version tags (e.g., "v" for v1.0.0)'
+    required: false
+    default: ''
+  
+  update_file:
+    description: 'File to update with new version (optional)'
+    required: false
+    default: ''
+  
+  update_pattern:
+    description: 'Regex pattern to match in update_file for version replacement'
+    required: false
+    default: ''
+  
+  update_replacement:
+    description: 'Replacement pattern for version update (use {version} placeholder)'
+    required: false
+    default: '{version}'
+  
+  create_release:
+    description: 'Create a GitHub release'
+    required: false
+    default: 'true'
+  
+  release_title:
+    description: 'Title template for GitHub release (use {version} placeholder)'
+    required: false
+    default: 'Release {version}'
+  
+  release_notes:
+    description: 'Custom release notes (optional)'
+    required: false
+    default: ''
+  
+  commit_message:
+    description: 'Commit message template (use {version} placeholder)'
+    required: false
+    default: 'Bump version to {version}'
+
+outputs:
+  previous_version:
+    description: 'The previous version'
+  
+  new_version:
+    description: 'The new version number'
+  
+  tag_name:
+    description: 'The full tag name (with prefix)'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Get latest tag
+      id: get-tag
+      shell: bash
+      run: |
+        # Get the latest tag, or default to 0.0.0 if no tags exist
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
+        # Remove prefix to get clean version
+        PREFIX="${{ inputs.tag_prefix }}"
+        CLEAN_VERSION=${LATEST_TAG#$PREFIX}
+        echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        echo "clean_version=$CLEAN_VERSION" >> $GITHUB_OUTPUT
+        echo "Latest tag: $LATEST_TAG"
+        echo "Clean version: $CLEAN_VERSION"
+
+    - name: Calculate new version
+      id: new-version
+      shell: bash
+      run: |
+        CLEAN_VERSION="${{ steps.get-tag.outputs.clean_version }}"
+        VERSION_BUMP="${{ inputs.version_bump }}"
+        PREFIX="${{ inputs.tag_prefix }}"
+        
+        # Split version into parts
+        IFS='.' read -r -a VERSION_PARTS <<< "$CLEAN_VERSION"
+        MAJOR=${VERSION_PARTS[0]:-0}
+        MINOR=${VERSION_PARTS[1]:-0}
+        PATCH=${VERSION_PARTS[2]:-0}
+        
+        # Increment based on input
+        case $VERSION_BUMP in
+          "major")
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            ;;
+          "minor")
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            ;;
+          "patch")
+            PATCH=$((PATCH + 1))
+            ;;
+        esac
+        
+        NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+        TAG_NAME="$PREFIX$NEW_VERSION"
+        
+        echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+        echo "New version: $NEW_VERSION"
+        echo "Tag name: $TAG_NAME"
+
+    - name: Update file if specified
+      shell: bash
+      run: |
+        if [[ -n "${{ inputs.update_file }}" && -f "${{ inputs.update_file }}" ]]; then
+          NEW_VERSION="${{ steps.new-version.outputs.new_version }}"
+          UPDATE_FILE="${{ inputs.update_file }}"
+          UPDATE_PATTERN="${{ inputs.update_pattern }}"
+          UPDATE_REPLACEMENT="${{ inputs.update_replacement }}"
+          
+          # Replace {version} placeholder in replacement string
+          REPLACEMENT=${UPDATE_REPLACEMENT//\{version\}/$NEW_VERSION}
+          
+          if [[ -n "$UPDATE_PATTERN" ]]; then
+            # Use sed with custom pattern
+            sed -i "s/$UPDATE_PATTERN/$REPLACEMENT/g" "$UPDATE_FILE"
+            echo "Updated $UPDATE_FILE using pattern: $UPDATE_PATTERN -> $REPLACEMENT"
+          else
+            echo "Warning: update_file specified but no update_pattern provided"
+          fi
+        fi
+
+    - name: Commit changes and create tag
+      shell: bash
+      run: |
+        NEW_VERSION="${{ steps.new-version.outputs.new_version }}"
+        TAG_NAME="${{ steps.new-version.outputs.tag_name }}"
+        COMMIT_MESSAGE="${{ inputs.commit_message }}"
+        
+        # Replace {version} placeholder in commit message
+        COMMIT_MSG=${COMMIT_MESSAGE//\{version\}/$NEW_VERSION}
+        
+        # Configure git
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Check if there are changes to commit
+        if [[ -n "${{ inputs.update_file }}" ]] && git diff --quiet HEAD; then
+          echo "No changes to commit"
+        elif [[ -n "${{ inputs.update_file }}" ]]; then
+          # Add and commit changes
+          git add "${{ inputs.update_file }}"
+          git commit -m "$COMMIT_MSG"
+          echo "Committed changes with message: $COMMIT_MSG"
+        fi
+        
+        # Create and push the new tag
+        git tag "$TAG_NAME"
+        git push origin HEAD
+        git push origin "$TAG_NAME"
+        
+        echo "Created and pushed tag: $TAG_NAME"
+
+    - name: Create GitHub Release
+      shell: bash
+      if: inputs.create_release == 'true'
+      run: |
+        NEW_VERSION="${{ steps.new-version.outputs.new_version }}"
+        TAG_NAME="${{ steps.new-version.outputs.tag_name }}"
+        LATEST_TAG="${{ steps.get-tag.outputs.latest_tag }}"
+        RELEASE_TITLE="${{ inputs.release_title }}"
+        CUSTOM_NOTES="${{ inputs.release_notes }}"
+        
+        # Replace {version} placeholder in title
+        TITLE=${RELEASE_TITLE//\{version\}/$NEW_VERSION}
+        
+        # Use custom notes if provided, otherwise generate default
+        if [[ -n "$CUSTOM_NOTES" ]]; then
+          NOTES="$CUSTOM_NOTES"
+        else
+          NOTES="## What's Changed
+
+        Automated release with version increment from $LATEST_TAG to $TAG_NAME.
+
+        **Full Changelog**: https://github.com/${{ github.repository }}/compare/$LATEST_TAG...$TAG_NAME"
+        fi
+        
+        gh release create "$TAG_NAME" \
+          --title "$TITLE" \
+          --notes "$NOTES"
+        
+        echo "Created GitHub release: $TAG_NAME"
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+    - name: Set outputs
+      shell: bash
+      run: |
+        echo "previous_version=${{ steps.get-tag.outputs.clean_version }}" >> $GITHUB_OUTPUT
+        echo "new_version=${{ steps.new-version.outputs.new_version }}" >> $GITHUB_OUTPUT
+        echo "tag_name=${{ steps.new-version.outputs.tag_name }}" >> $GITHUB_OUTPUT
